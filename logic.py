@@ -117,11 +117,69 @@ def _remove_headers_docx(doc):
 
 
 def _replace_in_paragraph(paragraph, mappings):
-    for run in paragraph.runs:
-        for sTo, sFrom, formats in mappings:
-            if sFrom in run.text:
-                if _format_matches(run, formats):
-                    run.text = run.text.replace(sFrom, sTo)
+    if not paragraph.runs:
+        return
+
+    full_text = paragraph.text
+    if not full_text:
+        return
+
+    for sTo, sFrom, formats in mappings:
+        if sFrom not in full_text:
+            continue
+
+        while sFrom in full_text:
+            idx = full_text.find(sFrom)
+            match_start = idx
+            match_end = idx + len(sFrom)
+
+            run_start_positions = []
+            char_offset = 0
+            for run in paragraph.runs:
+                run_start_positions.append(char_offset)
+                char_offset += len(run.text)
+
+            first_run_idx = None
+            last_run_idx = None
+            for i, run in enumerate(paragraph.runs):
+                run_start = run_start_positions[i]
+                run_end = run_start + len(run.text)
+                if run_start <= match_start < run_end:
+                    first_run_idx = i
+                if run_start < match_end <= run_end:
+                    last_run_idx = i
+                    break
+
+            if first_run_idx is None or last_run_idx is None:
+                break
+
+            if not _all_runs_match_format(paragraph.runs, first_run_idx, last_run_idx, formats):
+                full_text = full_text[match_end:]
+                continue
+
+            _merge_and_replace(paragraph.runs, first_run_idx, last_run_idx, match_start - run_start_positions[first_run_idx], match_end - run_start_positions[last_run_idx], sTo)
+
+            if sTo.find(sFrom) != -1:
+                full_text = full_text[match_end:]
+            else:
+                full_text = paragraph.text
+
+
+def _all_runs_match_format(runs, first_idx, last_idx, formats):
+    for i in range(first_idx, last_idx + 1):
+        if not _format_matches(runs[i], formats):
+            return False
+    return True
+
+
+def _merge_and_replace(runs, first_idx, last_idx, start_in_first, end_in_last, sTo):
+    before = runs[first_idx].text[:start_in_first]
+    after = runs[last_idx].text[end_in_last:]
+
+    runs[first_idx].text = before + sTo + after
+
+    for i in range(first_idx + 1, last_idx + 1):
+        runs[i].text = ""
 
 
 def _format_matches(run, formats):
