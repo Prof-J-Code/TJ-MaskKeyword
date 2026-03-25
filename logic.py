@@ -2,7 +2,12 @@ import os
 import glob
 
 
-VALID_FORMATS = {'bold', 'italic', 'underline'}
+def _find_mapping_file(mapping_folder, basename):
+    expected_filename = f"ref_mapping_{basename}.txt"
+    for filename in os.listdir(mapping_folder):
+        if filename.lower() == expected_filename.lower():
+            return os.path.join(mapping_folder, filename)
+    return None
 
 
 def process_files(file_folder, mapping_folder, remove_header=False):
@@ -24,9 +29,9 @@ def process_files(file_folder, mapping_folder, remove_header=False):
 
         for word_file in word_files:
             basename = os.path.splitext(os.path.basename(word_file))[0]
-            mapping_file = os.path.join(mapping_folder, f"ref_mapping_{basename}.txt")
+            mapping_file = _find_mapping_file(mapping_folder, basename)
 
-            if not os.path.exists(mapping_file):
+            if not mapping_file:
                 missing_mapping_files.append(basename)
                 continue
 
@@ -60,20 +65,12 @@ def read_mapping_file(mapping_file):
                 raise ValueError(f"Invalid mapping line {line_num}: {line}")
 
             sTo = parts[0].strip()
-            sFrom_part = parts[1].strip()
+            sFrom = parts[1].strip()
 
-            if not sTo or not sFrom_part:
+            if not sTo or not sFrom:
                 raise ValueError(f"Invalid mapping line {line_num}: {line}")
 
-            formats_parts = sFrom_part.split('|')
-            sFrom = formats_parts[0].strip()
-            formats = frozenset(f.strip().lower() for f in formats_parts[1:])
-
-            for fmt in formats:
-                if fmt and fmt not in VALID_FORMATS:
-                    raise ValueError(f"Unknown format: {fmt}")
-
-            mappings.append((sTo, sFrom, formats))
+            mappings.append((sTo, sFrom))
 
     return mappings
 
@@ -124,80 +121,96 @@ def _replace_in_paragraph(paragraph, mappings):
     if not full_text:
         return
 
-    for sTo, sFrom, formats in mappings:
+    for sTo, sFrom in mappings:
         if sFrom not in full_text:
             continue
 
-        while sFrom in full_text:
-            idx = full_text.find(sFrom)
-            match_start = idx
-            match_end = idx + len(sFrom)
+        if sTo.find(sFrom) != -1:
+            idx = full_text.rfind(sFrom)
+            while idx >= 0:
+                match_start = idx
+                match_end = idx + len(sFrom)
 
-            run_start_positions = []
-            char_offset = 0
-            for run in paragraph.runs:
-                run_start_positions.append(char_offset)
-                char_offset += len(run.text)
+                run_start_positions = []
+                char_offset = 0
+                for run in paragraph.runs:
+                    run_start_positions.append(char_offset)
+                    char_offset += len(run.text)
 
-            first_run_idx = None
-            last_run_idx = None
-            for i, run in enumerate(paragraph.runs):
-                run_start = run_start_positions[i]
-                run_end = run_start + len(run.text)
-                if run_start <= match_start < run_end:
-                    first_run_idx = i
-                if run_start < match_end <= run_end:
-                    last_run_idx = i
-                    break
+                first_run_idx = None
+                last_run_idx = None
+                for i, run in enumerate(paragraph.runs):
+                    run_start = run_start_positions[i]
+                    run_end = run_start + len(run.text)
+                    if run_start <= match_start < run_end:
+                        first_run_idx = i
+                    if run_start < match_end <= run_end:
+                        last_run_idx = i
+                        break
 
-            if first_run_idx is None or last_run_idx is None:
-                break
+                if first_run_idx is None or last_run_idx is None:
+                    idx = full_text.rfind(sFrom, 0, match_start)
+                    continue
 
-            if not _all_runs_match_format(paragraph.runs, first_run_idx, last_run_idx, formats):
-                full_text = full_text[match_end:]
-                continue
-
-            _merge_and_replace(paragraph.runs, first_run_idx, last_run_idx, match_start - run_start_positions[first_run_idx], match_end - run_start_positions[last_run_idx], sTo)
-
-            if sTo.find(sFrom) != -1:
-                full_text = full_text[match_end:]
-            else:
+                _merge_and_replace(paragraph.runs, first_run_idx, last_run_idx,
+                                 match_start - run_start_positions[first_run_idx],
+                                 match_end - run_start_positions[last_run_idx], sTo)
                 full_text = paragraph.text
 
+                idx = full_text.rfind(sFrom, 0, match_start)
+        else:
+            idx = full_text.find(sFrom)
+            while idx != -1:
+                match_start = idx
+                match_end = idx + len(sFrom)
 
-def _all_runs_match_format(runs, first_idx, last_idx, formats):
-    for i in range(first_idx, last_idx + 1):
-        if not _format_matches(runs[i], formats):
-            return False
-    return True
+                run_start_positions = []
+                char_offset = 0
+                for run in paragraph.runs:
+                    run_start_positions.append(char_offset)
+                    char_offset += len(run.text)
+
+                first_run_idx = None
+                last_run_idx = None
+                for i, run in enumerate(paragraph.runs):
+                    run_start = run_start_positions[i]
+                    run_end = run_start + len(run.text)
+                    if run_start <= match_start < run_end:
+                        first_run_idx = i
+                    if run_start < match_end <= run_end:
+                        last_run_idx = i
+                        break
+
+                if first_run_idx is None or last_run_idx is None:
+                    break
+
+                _merge_and_replace(paragraph.runs, first_run_idx, last_run_idx,
+                                 match_start - run_start_positions[first_run_idx],
+                                 match_end - run_start_positions[last_run_idx], sTo)
+
+                full_text = paragraph.text
+                idx = full_text.find(sFrom, match_end)
 
 
 def _merge_and_replace(runs, first_idx, last_idx, start_in_first, end_in_last, sTo):
-    before = runs[first_idx].text[:start_in_first]
-    after = runs[last_idx].text[end_in_last:]
+    before = ''.join(runs[i].text for i in range(first_idx)) + runs[first_idx].text[:start_in_first]
+
+    if last_idx == first_idx:
+        after = runs[last_idx].text[end_in_last:]
+    else:
+        after = runs[last_idx].text[end_in_last:] + ''.join(runs[i].text for i in range(last_idx + 1, len(runs)))
 
     runs[first_idx].text = before + sTo + after
 
     for i in range(first_idx + 1, last_idx + 1):
         runs[i].text = ""
 
+    if first_idx > 0:
+        for i in range(first_idx):
+            runs[i].text = ""
 
-def _format_matches(run, formats):
-    if not formats:
-        return True
-    if 'bold' in formats:
-        font = run.font
-        if font.bold is None or not font.bold:
-            return False
-    if 'italic' in formats:
-        font = run.font
-        if font.italic is None or not font.italic:
-            return False
-    if 'underline' in formats:
-        font = run.font
-        if font.underline is None or not font.underline:
-            return False
-    return True
+    for i in range(first_idx + 1, last_idx + 1):
+        runs[i].text = ""
 
 
 def process_doc(input_path, output_path, mappings, remove_header=False):
@@ -215,8 +228,8 @@ def process_doc(input_path, output_path, mappings, remove_header=False):
         if remove_header:
             _remove_headers_doc(doc)
 
-        for sTo, sFrom, formats in mappings:
-            find_and_replace(word, sFrom, sTo, formats)
+        for sTo, sFrom in mappings:
+            find_and_replace(word, sFrom, sTo)
 
         doc.SaveAs(os.path.abspath(output_path), FileFormat=16)
         doc.Close()
@@ -245,7 +258,7 @@ def _remove_headers_doc(doc):
                 pass
 
 
-def find_and_replace(word_app, sFrom, sTo, formats=None):
+def find_and_replace(word_app, sFrom, sTo):
     word_app.Selection.Find.ClearFormatting()
     word_app.Selection.Find.Text = sFrom
     word_app.Selection.Find.Replacement.Text = sTo
@@ -254,12 +267,5 @@ def find_and_replace(word_app, sFrom, sTo, formats=None):
     word_app.Selection.Find.Format = False
     word_app.Selection.Find.MatchCase = False
     word_app.Selection.Find.MatchWholeWord = False
-
-    if formats and 'bold' in formats:
-        word_app.Selection.Find.Font.Bold = True
-    if formats and 'italic' in formats:
-        word_app.Selection.Find.Font.Italic = True
-    if formats and 'underline' in formats:
-        word_app.Selection.Find.Font.Underline = True
 
     word_app.Selection.Find.Execute(Replace=2)
